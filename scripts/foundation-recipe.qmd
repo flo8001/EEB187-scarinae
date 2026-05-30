@@ -1,0 +1,454 @@
+---
+title: "Foundation Recipe — Building a clade color gamut from images"
+output: html_document
+date: "2026-05-29"
+execute:
+  root.dir: !expr here::here()
+---
+```{r}
+library(here)
+library(ape)
+
+tree <- readRDS(here("data/scarinae-78-bundle/scarinae-78-tree-normalized.rds"))
+tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", tree$tip.label)
+
+dups <- duplicated(tree$tip.label)
+if (any(dups)) {
+  cat("Dropping", sum(dups), "duplicate tips\n")
+  tree <- drop.tip(tree, tree$tip.label[dups])
+}
+
+cat("Tree ready:", length(tree$tip.label), "species\n")
+saveRDS(tree, here("data/scarinae-78-tree-normalized.rds"))
+
+plot(tree, cex = 0.5)
+fan_plot <- plot(tree, type = "fan", cex = 0.5)
+
+```
+
+
+
+```{r}
+suppressPackageStartupMessages({
+  library(pavo)
+  library(geometry)
+  library(colorspace)
+  library(ape)
+  library(ggplot2)
+  library(patchwork)
+  library(grDevices)
+  library(dplyr)
+})
+```
+
+```{r}
+# ── YOUR BUNDLE ─────────────────────────────────────────────────
+# Change this ONE path to point to your FishView bundle directory:
+bundle_dir <- "data/scarinae-78-bundle"
+
+# Everything else is derived automatically:
+img_dir   <- file.path(bundle_dir, "images")
+tree_file <- list.files(bundle_dir, pattern = "-tree\\.tre$",
+                        full.names = TRUE)[1]
+
+# Background-color CSV: if you haven't built one yet, the recipe will
+# create a template after the swatch-inspection step below.
+bg_csv <- file.path(bundle_dir, "background-ids.csv")
+
+# k for the k-means classification. Reef-fish species typically have
+# 3-6 distinct color patches plus a background, so k = 4 is a sensible
+# default. Try k = 3 and k = 5 to see how sensitive your gamut is.
+k <- 5L
+
+# Alternatively, if your bundle has a species_k_bg.csv with per-species
+# gestalt_k values from the FishView dashboard, load those:
+k_csv <- file.path(bundle_dir, "species_k_bg.csv")
+if (file.exists(k_csv)) {
+  cat("Found per-species k values in species_k_bg.csv — will use those.\n")
+} else {
+  cat("Using fixed k =", k, "for all species.\n")
+}
+```
+```{r}
+# -- 1a. Enforce one-image-per-species policy -----------------------------
+# Every image filename (sans extension) must map to a unique species.
+# If you have multiple images of a species, pick the most representative
+# and use just that one. Multi-image aggregation is a follow-up recipe.
+#
+# IMPORTANT — HYBRID bundle layout: a FishView-exported bundle now contains
+# BOTH flat exemplars (images/Genus_species.png) and per-species replicate
+# folders (images/Genus_species/exemplar.png, img-1.png, ...). For the
+# one-image-per-species color-gamut analysis we use ONLY the flat files:
+# the pattern below matches "Genus_species.png" directly under `img_dir`
+# (not recursive), which both layouts satisfy and which never picks up
+# `exemplar.png` or `img-N.png` from per-species subfolders.
+
+img_files <- list.files(
+  img_dir,
+  pattern = "^[A-Z][a-z]+_[a-z]+\\.(png|jpg|jpeg|tif|tiff)$",
+  ignore.case = FALSE, full.names = FALSE, recursive = FALSE
+)
+if (length(img_files) == 0) {
+  # Fall back to the broader pattern for old flat-only smoketest data.
+  img_files <- list.files(img_dir,
+                          pattern = "\\.(png|jpg|jpeg|tif|tiff)$",
+                          ignore.case = TRUE, full.names = FALSE,
+                          recursive = FALSE)
+}
+species_labels <- tools::file_path_sans_ext(img_files)
+dup_species    <- species_labels[duplicated(species_labels)]
+
+if (length(dup_species)) {
+  stop(
+    "Duplicate species labels detected in image directory:\n  ",
+    paste(unique(dup_species), collapse = ", "),
+    "\n\nThe color-gamut recipe requires ONE representative image per species.\n",
+    "Pick the most representative image for each duplicated species and ",
+    "remove the others from `", img_dir, "`. Multi-image aggregation will ",
+    "be addressed in a follow-up recipe."
+  )
+}
+
+cat("OK: ", length(img_files), " images, all unique species labels.\n", sep = "")
+```
+```{r}
+# -- 1b. Load all species images and classify each one with k-means ------
+# We set a seed before classify() so the swatch grid you inspect (section 3)
+# and the centroid table (section 5) are byte-identical run-to-run. k-means
+# cluster indices may still shuffle if you change `k` or your image
+# set; the bg-by-RGB-distance match in section 4 is robust to that.
+#
+# Load each flat file one-by-one so we never recurse into per-species
+# replicate folders. (pavo::getimg() accepts a single path or a directory,
+# but not a vector of paths -- so we lapply over the flat list and combine.)
+set.seed(20260526)
+img_full <- file.path(img_dir, img_files)
+imgs <- lapply(img_full, function(p) pavo::getimg(p))
+class(imgs) <- c("rimg", "list")
+cat("Loaded", length(imgs), "images\n")
+options(future.globals.maxSize = 2 * 1024^3)  # set to 2 GiB
+cl <- pavo::classify(imgs, kcols = k)
+```
+
+```{r}
+# -- 2. Pull per-image cluster centroids (RGB) and proportions -----------
+# summary(cl) gives the RGB centroid of every cluster in every image,
+# but does NOT include the proportion (pixel share). We compute the
+# proportions from the classified pixel matrices directly.
+centroids <- summary(cl)
+names(centroids)[1] <- "img_ID"
+
+prop_rows <- lapply(seq_along(cl), function(i) {
+  m   <- cl[[i]]
+  tab <- prop.table(table(as.vector(m)))
+  data.frame(
+    img_ID     = attr(m, "imgname"),
+    col_ID     = as.integer(names(tab)),
+    proportion = as.numeric(tab),
+    stringsAsFactors = FALSE
+  )
+})
+props <- do.call(rbind, prop_rows)
+
+per_image <- merge(centroids, props, by = c("img_ID", "col_ID"))
+per_image$species <- per_image$img_ID  # filename was set to tip label
+head(per_image)
+```
+```{r}
+# -- 3. Print a swatch grid of every centroid for every image ------------
+# This is the picture you read while filling in `background-ids.csv`.
+# Each row is one image; each cell shows the cluster's centroid colour
+# with its col_ID printed on top in contrasting text. The student's
+# job: for each row, decide which col_ID is the background and write
+# that pair into the CSV.
+
+swatch_df <- per_image
+swatch_df$hex <- grDevices::rgb(swatch_df$R, swatch_df$G, swatch_df$B,
+                                maxColorValue = 1)
+# pick a readable text colour per swatch (white on dark, black on light)
+swatch_df$text_col <- ifelse(
+  (0.299 * swatch_df$R + 0.587 * swatch_df$G + 0.114 * swatch_df$B) > 0.55,
+  "black", "white"
+)
+swatch_df$label <- sprintf("(%.2f, %.2f, %.2f)\n%.0f%%",
+                          swatch_df$R, swatch_df$G, swatch_df$B,
+                          100 * swatch_df$proportion)
+
+ggplot(swatch_df, aes(x = factor(col_ID), y = img_ID, fill = hex)) +
+  geom_tile(colour = "grey20", linewidth = 0.3) +
+  geom_text(aes(label = label, colour = text_col), size = 2.6, lineheight = 0.9) +
+  scale_fill_identity() +
+  scale_colour_identity() +
+  labs(x = "Cluster (this run's index)", y = NULL,
+       title = "Centroid swatches per image",
+       subtitle = "Identify the background COLOR (RGB triple) and record it in background-ids.csv") +
+  theme_minimal(base_size = 11) +
+  theme(panel.grid = element_blank(),
+        axis.text.y = element_text(family = "mono"))
+```
+```{r}
+# -- 4. Drop the background cluster for each image (white background) ------
+# All images have white backgrounds from tight segmentation.
+# For each image, drop the cluster whose centroid is closest to white (1,1,1).
+# A distance threshold is applied so that if no cluster is close enough to
+# white, nothing is dropped (protects species with no true white cluster).
+
+WHITE      <- c(1, 1, 1)
+BG_THRESH  <- 0.25   # max Euclidean RGB distance to be called "background"
+                     # pure white = 0; raise to 0.35 if pale clusters get kept
+
+per_image$is_background <- FALSE
+match_log <- vector("list", length(unique(per_image$img_ID)))
+
+for (idx in seq_along(unique(per_image$img_ID))) {
+  im   <- unique(per_image$img_ID)[idx]
+  rows <- per_image[per_image$img_ID == im, ]
+
+  d          <- sqrt((rows$R - WHITE[1])^2 +
+                     (rows$G - WHITE[2])^2 +
+                     (rows$B - WHITE[3])^2)
+  best_d     <- min(d)
+  bg_col_id  <- rows$col_ID[which.min(d)]
+
+  if (best_d <= BG_THRESH) {
+    per_image$is_background[per_image$img_ID == im &
+                            per_image$col_ID  == bg_col_id] <- TRUE
+  }
+
+  match_log[[idx]] <- data.frame(
+    img_ID    = im,
+    bg_R      = round(rows$R[which.min(d)], 3),
+    bg_G      = round(rows$G[which.min(d)], 3),
+    bg_B      = round(rows$B[which.min(d)], 3),
+    distance  = round(best_d, 3),
+    dropped   = best_d <= BG_THRESH,
+    stringsAsFactors = FALSE
+  )
+}
+
+matches <- do.call(rbind, match_log)
+cat("Background cluster search (target = white):\n")
+print(matches, row.names = FALSE)
+
+n_dropped  <- sum(matches$dropped == FALSE)
+if (n_dropped > 0) {
+  cat("\nWARNING:", n_dropped, "image(s) had no cluster close enough to white",
+      "(distance >", BG_THRESH, ") — all clusters kept as foreground:\n")
+  cat(paste(" ", matches$img_ID[!matches$dropped], collapse = "\n"), "\n")
+}
+
+foreground <- per_image[!per_image$is_background, ]
+cat("\nMarked", sum(per_image$is_background), "background centroids;",
+    "kept", nrow(foreground), "foreground centroids across",
+    length(unique(foreground$species)), "species.\n")
+```
+```{r}
+# -- 5. Tidy per-species centroid table (what you'd put in supp.) --------
+species_table <- foreground[, c("species", "R", "G", "B", "proportion")]
+species_table <- species_table[order(species_table$species,
+                                     -species_table$proportion), ]
+knitr::kable(species_table, digits = 3,
+             caption = "Foreground RGB centroids per species (background dropped).")
+```
+```{r}
+# -- 6. Convert RGB to CIELAB --------------------------------------------
+# The colorspace package converts sRGB (gamma-corrected camera RGB) to
+# CIELAB via the XYZ intermediate, assuming D65 illuminant. This is the
+# standard conversion for photographs stored as sRGB JPEG/PNG.
+pts_rgb <- as.matrix(foreground[, c("R", "G", "B")])
+srgb_obj <- colorspace::sRGB(pts_rgb[, "R"], pts_rgb[, "G"], pts_rgb[, "B"])
+lab_obj  <- as(srgb_obj, "LAB")
+lab_pts  <- colorspace::coords(lab_obj)
+colnames(lab_pts) <- c("L", "a", "b")
+
+# Attach CIELAB coordinates to the foreground data
+foreground$L <- lab_pts[, "L"]
+foreground$a <- lab_pts[, "a"]
+foreground$b <- lab_pts[, "b"]
+foreground$chroma <- sqrt(foreground$a^2 + foreground$b^2)
+foreground$hue_deg <- (atan2(foreground$b, foreground$a) * 180 / pi) %% 360
+
+cat(sprintf("L* range: [%.1f, %.1f]\n", min(lab_pts[, "L"]), max(lab_pts[, "L"])))
+cat(sprintf("a* range: [%.1f, %.1f]\n", min(lab_pts[, "a"]), max(lab_pts[, "a"])))
+cat(sprintf("b* range: [%.1f, %.1f]\n", min(lab_pts[, "b"]), max(lab_pts[, "b"])))
+cat(sprintf("Chroma range: [%.1f, %.1f]\n",
+            min(foreground$chroma), max(foreground$chroma)))
+```
+
+```{r}
+# -- 7. Convex hull in CIELAB space + volume -----------------------------
+hull_lab <- geometry::convhulln(lab_pts, options = "FA")
+vol_lab  <- hull_lab$vol
+
+# Reference volume: the entire sRGB gamut boundary mapped into CIELAB.
+# We sample the sRGB cube on a fine grid and compute its convex hull.
+srgb_grid <- expand.grid(R = seq(0, 1, by = 0.05),
+                          G = seq(0, 1, by = 0.05),
+                          B = seq(0, 1, by = 0.05))
+ref_srgb  <- colorspace::sRGB(srgb_grid$R, srgb_grid$G, srgb_grid$B)
+ref_lab   <- colorspace::coords(as(ref_srgb, "LAB"))
+hull_ref  <- geometry::convhulln(ref_lab, options = "FA")
+vol_ref   <- hull_ref$vol
+
+occupancy_lab <- vol_lab / vol_ref
+
+cat(sprintf("Clade CIELAB gamut volume:       %.0f cubic CIELAB units\n", vol_lab))
+cat(sprintf("sRGB reference volume in CIELAB: %.0f cubic CIELAB units\n", vol_ref))
+cat(sprintf("Occupancy (vs sRGB gamut):       %.1f%%\n", 100 * occupancy_lab))
+```
+```{r}
+# -- 8. Hero figure: a*-b* chromaticity + L* vs chroma ------------------
+# Panel A: a*-b* chromaticity diagram with convex hull + chroma circles
+# Panel B: L* vs chroma scatter showing lightness distribution
+
+plot_df <- data.frame(
+  species = foreground$species,
+  L       = foreground$L,
+  a       = foreground$a,
+  b       = foreground$b,
+  chroma  = foreground$chroma,
+  hue_deg = foreground$hue_deg,
+  hex     = grDevices::rgb(pts_rgb[, "R"], pts_rgb[, "G"], pts_rgb[, "B"])
+)
+
+# 2D convex hull on a*-b* plane
+hull_ab_idx <- grDevices::chull(plot_df$a, plot_df$b)
+hull_ab_idx <- c(hull_ab_idx, hull_ab_idx[1])
+hull_ab_df  <- plot_df[hull_ab_idx, ]
+
+# Concentric chroma circles for saturation reference
+circle_df <- do.call(rbind, lapply(c(20, 40, 60), function(r) {
+  theta <- seq(0, 2 * pi, length.out = 100)
+  data.frame(a = r * cos(theta), b = r * sin(theta), radius = r)
+}))
+
+# Panel A: a* vs b* chromaticity diagram
+p_ab <- ggplot(plot_df, aes(x = a, y = b)) +
+  # Chroma reference circles
+  geom_path(data = circle_df, aes(x = a, y = b, group = radius),
+            colour = "grey85", linewidth = 0.3, linetype = "dashed") +
+  # Label the chroma circles
+  annotate("text", x = 22, y = 2, label = "20", colour = "grey70",
+           size = 3, fontface = "italic") +
+  annotate("text", x = 42, y = 2, label = "40", colour = "grey70",
+           size = 3, fontface = "italic") +
+  annotate("text", x = 62, y = 2, label = "60", colour = "grey70",
+           size = 3, fontface = "italic") +
+  # Convex hull polygon
+  geom_polygon(data = hull_ab_df, fill = "grey92", colour = "grey30",
+               linewidth = 0.6, alpha = 0.4) +
+  # Origin crosshairs (neutral gray)
+  geom_hline(yintercept = 0, colour = "grey70", linewidth = 0.3) +
+  geom_vline(xintercept = 0, colour = "grey70", linewidth = 0.3) +
+  # Data points
+  geom_point(aes(fill = hex), shape = 21, size = 3.5,
+             colour = "grey20", stroke = 0.4) +
+  scale_fill_identity() +
+  # Origin marker
+  annotate("point", x = 0, y = 0, shape = 3, size = 3, colour = "grey50") +
+  coord_equal() +
+  scale_x_continuous(breaks = seq(-60, 80, by = 20)) +
+  scale_y_continuous(breaks = seq(-80, 80, by = 20)) +
+  labs(x = expression(paste(a, "* ", " (\u2190 green | red \u2192)")),
+       y = expression(paste(b, "* ", " (\u2190 blue | yellow \u2192)")),
+       title = sprintf("A. Chromaticity (a*-b*) — %.1f%% of sRGB gamut",
+                        100 * occupancy_lab)) +
+  theme_minimal(base_size = 14) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(size = 13, face = "bold"))
+
+# Panel B: L* vs chroma scatter
+p_Lc <- ggplot(plot_df, aes(x = chroma, y = L)) +
+  geom_point(aes(fill = hex), shape = 21, size = 3,
+             colour = "grey20", stroke = 0.4) +
+  scale_fill_identity() +
+  scale_y_continuous(limits = c(0, 100), breaks = seq(0, 100, by = 20)) +
+  labs(x = "Chroma (saturation)",
+       y = expression(paste(L, "* (lightness)")),
+       title = "B. Lightness vs saturation") +
+  theme_minimal(base_size = 14) +
+  theme(panel.grid.minor = element_blank(),
+        plot.title = element_text(size = 13, face = "bold"))
+
+# Combine: Panel A takes ~70%, Panel B takes ~30%
+p_ab + p_Lc + plot_layout(widths = c(7, 3))
+
+pdf("scarinae-color_gamut.pdf", width = 14, height = 6)
+p_ab + p_Lc + plot_layout(widths = c(7, 3))
+dev.off()
+```
+
+```{r}
+# -- 9. Per-species gamut sizes in CIELAB --------------------------------
+sp_gamuts <- foreground %>%
+  group_by(species) %>%
+  filter(n() >= 4) %>%        # need 4+ non-bg clusters for 3D hull
+  summarise(
+    n_clust = n(),
+    vol = tryCatch(
+      geometry::convhulln(cbind(L, a, b), options = "FA")$vol,
+      error = function(e) NA_real_
+    ),
+    mean_chroma = mean(chroma),
+    L_range = max(L) - min(L),
+    .groups = "drop"
+  ) %>%
+  arrange(desc(vol))
+
+cat(sprintf("Per-species gamut volumes available for %d species (those with k>=5):\n",
+            nrow(sp_gamuts)))
+head(sp_gamuts, 10)
+#write_csv(sp_gamuts, "sp_gamuts.csv")
+```
+
+```{r}
+# -- 10. Distribution of per-species gamut volumes -----------------------
+ggplot(sp_gamuts, aes(vol)) +
+  geom_histogram(bins = 24, fill = "#1f77b4", colour = "grey90") +
+  labs(x = "Per-species gamut volume (CIELAB cubic units)",
+       y = "Number of species") +
+  theme_minimal(base_size = 20)
+```
+```{r}
+# -- 11. Species at the extremes of the gamut ----------------------------
+extremes <- list(
+  `Most red (+a*)`   = foreground[which.max(foreground$a), c("species", "a", "b", "L")],
+  `Most green (-a*)` = foreground[which.min(foreground$a), c("species", "a", "b", "L")],
+  `Most yellow (+b*)`= foreground[which.max(foreground$b), c("species", "a", "b", "L")],
+  `Most blue (-b*)`  = foreground[which.min(foreground$b), c("species", "a", "b", "L")],
+  `Brightest (L*)`   = foreground[which.max(foreground$L), c("species", "a", "b", "L")],
+  `Darkest (L*)`     = foreground[which.min(foreground$L), c("species", "a", "b", "L")],
+  `Highest chroma`   = foreground[which.max(foreground$chroma), c("species", "a", "b", "L")]
+)
+extremes_df <- do.call(rbind, extremes)
+extremes_df$category <- names(extremes)
+knitr::kable(extremes_df[, c("category", "species", "L", "a", "b")],
+             digits = 1, row.names = FALSE,
+             caption = "Species at the extremes of the CIELAB gamut.")
+```
+```{r}
+# -- 12. Sanity check: how many of your tree's tips are represented? -----
+tree <- tryCatch(ape::read.nexus(tree_file),
+                 error = function(e) ape::read.tree(tree_file))
+
+# Strip specimen codes after reloading
+tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", tree$tip.label)
+
+in_tree  <- intersect(unique(foreground$species), tree$tip.label)
+missing  <- setdiff(unique(foreground$species), tree$tip.label)
+cat("Species in both tree and image set:", length(in_tree), "\n")
+cat("Image species missing from tree:   ", length(missing), "\n")
+if (length(missing)) cat("  -> ", paste(missing, collapse = ", "), "\n")
+```
+
+```{r}
+# -- 13. One-line interpretation -----------------------------------------
+cat(sprintf(
+  "The %d-species sample occupies %.1f%% of the achievable sRGB gamut in CIELAB (volume %.0f at k = %d).\n",
+  length(unique(foreground$species)),
+  100 * occupancy_lab,
+  vol_lab,
+  k
+))
+```
+

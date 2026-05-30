@@ -1,0 +1,87 @@
+---
+title: "Recipe 1: Phylogenetic signal"
+author: "Flo"
+format: html
+---
+
+```{r}
+library(here)
+source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")
+
+# ── 1. Load your bundle and pavo data ───────────────────────────
+bundle   <- load_bundle(here("data/scarinae-78-bundle"))
+bundle$tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", bundle$tree$tip.label)
+dups <- duplicated(bundle$tree$tip.label)
+if (any(dups)) {
+  bundle$tree <- ape::drop.tip(bundle$tree, bundle$tree$tip.label[dups])
+}
+
+pavo_csv <- read.csv(here("data/traits_df_78.csv"), stringsAsFactors = FALSE)
+
+# ── 2. Match tree to data ───────────────────────────────────────
+matched <- match_tree_data(bundle$tree, pavo_csv, species_col = "species")
+tree    <- matched$tree
+dat     <- matched$data
+cat("Working with", length(tree$tip.label), "species\n")
+
+# ── 3. Blomberg's K for all 6 pavo variables ───────────────────
+K_table <- format_K_table(dat, tree,
+                          vars = c("m", "A", "Jc", "Jt", "m_dS", "m_dL"))
+print(K_table)
+
+# ── 4. Pagel's lambda for comparison ───────────────────────────
+lambda_results <- data.frame(
+  Variable = character(0),
+  lambda   = numeric(0),
+  p_value  = numeric(0),
+  stringsAsFactors = FALSE
+)
+for (v in c("m", "A", "Jc", "Jt", "m_dS", "m_dL")) {
+  x <- setNames(dat[[v]], dat$species)
+  check_trait(x, name = v, tree = tree)
+  x <- x[!is.na(x)]
+  overlap  <- intersect(names(x), tree$tip.label)
+  t_pruned <- ape::drop.tip(tree, setdiff(tree$tip.label, overlap))
+  x <- x[t_pruned$tip.label]
+  res <- phytools::phylosig(t_pruned, x, method = "lambda", test = TRUE)
+  lambda_results <- rbind(lambda_results, data.frame(
+    Variable = v,
+    lambda   = round(res$lambda, 3),
+    p_value  = round(res$P, 4),
+    stringsAsFactors = FALSE
+  ))
+}
+print(lambda_results)
+
+# ── 5. PCA for contMap ──────────────────────────────────────────
+pavo_vars <- c("m", "A", "Jc", "Jt", "m_dS", "m_dL")
+trait_mat <- dat[, pavo_vars]
+rownames(trait_mat) <- dat$species
+complete  <- complete.cases(trait_mat)
+trait_mat <- trait_mat[complete, ]
+tree_pca  <- ape::drop.tip(tree, setdiff(tree$tip.label, rownames(trait_mat)))
+trait_mat <- trait_mat[tree_pca$tip.label, ]
+pc  <- prcomp(trait_mat, scale. = TRUE)
+pc1 <- setNames(pc$x[, "PC1"], rownames(pc$x))
+check_trait(pc1, tree = tree_pca)
+
+# ── 6. contMap ──────────────────────────────────────────────────
+cm <- phytools::contMap(tree_pca, pc1, plot = FALSE)
+plot(cm, type = "fan", fsize = 0.5, lwd = 3,
+     legend = 0.7 * max(nodeHeights(tree_pca)))
+title("PC1 of color pattern mapped on phylogeny")
+
+# ── 7. Save PDF ─────────────────────────────────────────────────
+pdf(here("figures/recipe1-contmap-pc1.pdf"), width = 10, height = 10)
+plot(cm, type = "fan", fsize = 0.5, lwd = 3,
+     legend = 0.7 * max(nodeHeights(tree_pca)))
+title("PC1 of color pattern mapped on phylogeny")
+dev.off()
+cat("Saved: figures/recipe1-contmap-pc1.pdf\n")
+
+# ── 8. Summary table ────────────────────────────────────────────
+summary_table <- merge(K_table, lambda_results, by = "Variable",
+                       suffixes = c("_K", "_lambda"))
+print(summary_table)
+```
+

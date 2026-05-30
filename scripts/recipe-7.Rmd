@@ -1,0 +1,105 @@
+---
+title: "Recipe 7: Body Size and Pattern Complexity"
+output: html_document
+date: "2026-05-30"
+---
+```{r}
+# ── Recipe 7: Body Size and Pattern Complexity ────────────────
+source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")
+
+# ── 1. Load your data ────────────────────────────────────────
+traits <- read.csv("/Users/Flo/Downloads/EEB187/traits_df_78.csv",
+                    stringsAsFactors = FALSE)
+bundle <- load_bundle("/Users/Flo/Downloads/EEB187/scarinae-78-bundle")
+# Strip specimen codes from tree tips
+bundle$tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", bundle$tree$tip.label)
+# ── 2. Pull body size from FishBase ──────────────────────────
+fb <- pull_fishbase(traits$species,
+                    fields = list(estimate = c("MaxLengthTL")))
+
+
+# ── 3. Merge and transform ──────────────────────────────────
+merged <- merge(traits, fb, by = "species")
+merged$MaxLengthTL <- as.numeric(merged$MaxLengthTL)
+
+# Deduplicate — keep the row with the largest MaxLengthTL per species
+merged <- merged[order(merged$species, -merged$MaxLengthTL), ]
+merged <- merged[!duplicated(merged$species), ]
+
+merged <- merged[!is.na(merged$MaxLengthTL) & merged$MaxLengthTL > 0, ]
+merged$log_size <- log(merged$MaxLengthTL)
+cat("Species with size data:", nrow(merged), "\n")
+
+# ── 4. Match to tree ────────────────────────────────────────
+matched <- match_tree_data(bundle$tree, merged, species_col = "species")
+
+# Remove duplicate Sparisoma_radians — keep first row
+matched$data <- matched$data[!duplicated(matched$data$species), ]
+rownames(matched$data) <- matched$data$species
+
+# Prune tree to match cleaned data
+matched$tree <- ape::drop.tip(matched$tree,
+                               setdiff(matched$tree$tip.label,
+                                       matched$data$species))
+
+cat("After dedup:", nrow(matched$data), "species\n")
+
+# Now run PGLS
+model <- safe_pgls(m ~ log_size, df = matched$data, tree = matched$tree)
+
+# ── 5. PGLS: complexity vs log body size ─────────────────────
+model <- safe_pgls(m ~ log_size, df = matched$data, tree = matched$tree)
+
+# ── 6a. PGLS scatter plot (log body size) ────────────────────
+library(ggplot2)
+
+p1 <- ggplot(matched$data, aes(x = log_size, y = m)) +
+  geom_point(size = 4, alpha = 0.7, color = "#264653") +
+  { if (!is.null(model))
+    geom_abline(intercept = coef(model)[1], slope = coef(model)[2],
+                color = "#e76f51", linewidth = 1.2) } +
+  labs(x = "log(Max Total Length, cm)",
+       y = "Pattern Transition Density (m)",
+       title = "Pattern complexity vs. body size (PGLS)",
+       subtitle = "Log body size for statistical model") +
+  theme_poster
+
+print(p1)
+ggsave("results/recipe7-pgls-size-vs-m.pdf", p1, width = 10, height = 8)
+
+# ── 6b. Murray's diagnostic plot (raw body size) ────────────
+p2 <- ggplot(matched$data, aes(x = MaxLengthTL, y = m)) +
+  # Annotate Murray's threshold zones
+  annotate("rect", xmin = 0, xmax = 10, ymin = -Inf, ymax = Inf,
+           fill = "#e9c46a", alpha = 0.15) +
+  annotate("rect", xmin = 10, xmax = 50, ymin = -Inf, ymax = Inf,
+           fill = "#2a9d8f", alpha = 0.10) +
+  annotate("rect", xmin = 50, xmax = Inf, ymin = -Inf, ymax = Inf,
+           fill = "#264653", alpha = 0.10) +
+  annotate("text", x = 5, y = Inf, label = "Small\n(<10 cm)",
+           vjust = 1.5, size = 5, color = "#e9c46a", fontface = "bold") +
+  annotate("text", x = 30, y = Inf, label = "Medium\n(10-50 cm)",
+           vjust = 1.5, size = 5, color = "#2a9d8f", fontface = "bold") +
+  annotate("text", x = 75, y = Inf, label = "Large\n(>50 cm)",
+           vjust = 1.5, size = 5, color = "#264653", fontface = "bold") +
+  geom_point(size = 4, alpha = 0.7, color = "#264653") +
+  labs(x = "Max Total Length (cm, raw scale)",
+       y = "Pattern Transition Density (m)",
+       title = "Murray's scaling diagnostic",
+       subtitle = "Raw body size to visualize theoretical threshold zones") +
+  theme_poster
+
+print(p2)
+ggsave("results/recipe7-murray-diagnostic.pdf", p2, width = 12, height = 8)
+
+cat("Saved: results/recipe7-pgls-size-vs-m.pdf\n")
+cat("Saved: results/recipe7-murray-diagnostic.pdf\n")
+```
+```{r}
+# Check for duplicates after your dedup step
+table(merged$species)[table(merged$species) > 1]
+
+# And check what match_tree_data returns
+table(matched$data$species)[table(matched$data$species) > 1]
+```
+
