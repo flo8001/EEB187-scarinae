@@ -15,6 +15,7 @@ Chlorurus_gibbusF349
 Chlorurus_microrhinosF307
 Chlorurus_rhakouraF350
 Chlorurus_spilurusF284
+Cryptotomus_roseusF126
 Hipposcarus_haridF544HC23
 Leptoscarus_vaigiensisF151
 Nicholsina_ustaF392
@@ -63,6 +64,7 @@ Scarus_xanthopleuraF321
 Scarus_zelindaeF322
 Scarus_zufarF293
 Sparisoma_amplumF323
+Sparisoma_atomariumF139
 Sparisoma_aurofrenatumF140
 Sparisoma_axillareF324
 Sparisoma_choatiF415

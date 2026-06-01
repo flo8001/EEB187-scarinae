@@ -1,7 +1,7 @@
 EEB 187 FishView mini-bundle (Demo 8)
 Family: scarinae
-Species exported: 76 (85 regular + 1 error)
-Total Included images: 155
+Species exported: 78 (88 regular + 1 error)
+Total Included images: 100
 Species missing tip in tree: 0
 Tree format: newick
 Error-species: Chlorurus_japanensis (5 images)

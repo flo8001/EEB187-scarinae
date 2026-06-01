@@ -15,6 +15,7 @@ Chlorurus_gibbus
 Chlorurus_microrhinos
 Chlorurus_rhakoura
 Chlorurus_spilurus
+Cryptotomus_roseus
 Hipposcarus_harid
 Leptoscarus_vaigiensis
 Nicholsina_usta
@@ -63,6 +64,7 @@ Scarus_xanthopleura
 Scarus_zelindae
 Scarus_zufar
 Sparisoma_amplum
+Sparisoma_atomarium
 Sparisoma_aurofrenatum
 Sparisoma_axillare
 Sparisoma_choati

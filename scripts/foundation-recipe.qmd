@@ -38,13 +38,14 @@ suppressPackageStartupMessages({
   library(patchwork)
   library(grDevices)
   library(dplyr)
+  library(here)
 })
 ```
 
 ```{r}
 # ── YOUR BUNDLE ─────────────────────────────────────────────────
 # Change this ONE path to point to your FishView bundle directory:
-bundle_dir <- "data/scarinae-78-bundle"
+bundle_dir <- here("data/scarinae-78-bundle")
 
 # Everything else is derived automatically:
 img_dir   <- file.path(bundle_dir, "images")
@@ -373,7 +374,7 @@ p_Lc <- ggplot(plot_df, aes(x = chroma, y = L)) +
 # Combine: Panel A takes ~70%, Panel B takes ~30%
 p_ab + p_Lc + plot_layout(widths = c(7, 3))
 
-pdf("scarinae-color_gamut.pdf", width = 14, height = 6)
+pdf(here("figures/scarinae-color_gamut.pdf"), width = 14, height = 6)
 p_ab + p_Lc + plot_layout(widths = c(7, 3))
 dev.off()
 ```
