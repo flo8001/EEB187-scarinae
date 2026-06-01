@@ -1,0 +1,77 @@
+---
+title: "Recipe 13: Sexual System and Color Complexity"
+format: html
+---
+
+**My images are TP**
+
+```{r}
+library(here)
+# ── Recipe 13: Sexual System and Color Complexity ────────────────
+source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")   # loads ape, phytools, nlme, ggplot2, theme_poster
+
+# ── 1. Load your pavo metrics and tree ──────────────────────────
+traits <- read.csv("data/",
+                   stringsAsFactors = FALSE)
+tree   <- ape::read.tree("path/to/your-family-mini-tree.tre")
+
+# ── 2. Pull sexual system data from FishBase ─────────────────────
+# rfishbase 5.x uses `ReproMode` (older versions used `Mode`).
+fb <- pull_fishbase(traits$species,
+                    fields = list(reproduction = c("ReproMode")))
+
+cat("Raw ReproMode values from FishBase:\n")
+print(table(fb$ReproMode, useNA = "always"))
+
+# ── 3. Merge and clean to binary predictor ──────────────────────
+merged <- merge(traits, fb, by = "species")
+
+merged$sexual_system <- ifelse(
+  grepl("protogyn", merged$ReproMode, ignore.case = TRUE), "protogynous",
+  ifelse(grepl("dioec|gonochor", merged$ReproMode, ignore.case = TRUE),
+         "gonochoristic", NA))
+
+cat("\nSpecies retained by sexual system:\n")
+print(table(merged$sexual_system, useNA = "always"))
+
+# Drop species with NA sexual system (protandrous, simultaneous, missing)
+n_before <- nrow(merged)
+merged   <- merged[!is.na(merged$sexual_system), ]
+cat("\nDropped", n_before - nrow(merged), "species with NA or other sexual system\n")
+cat("Final N:", nrow(merged), "\n")
+
+# ── 4. Match tree to filtered data ──────────────────────────────
+matched <- match_tree_data(tree, merged, species_col = "species")
+cat("Species in PGLS:", nrow(matched$data), "\n")
+cat("  Protogynous:", sum(matched$data$sexual_system == "protogynous"), "\n")
+cat("  Gonochoristic:", sum(matched$data$sexual_system == "gonochoristic"), "\n")
+
+# ── 5. PGLS: pattern complexity ~ sexual system ──────────────────
+model <- safe_pgls(m ~ sexual_system, df = matched$data, tree = matched$tree)
+print(summary(model))
+
+# ── 6. Boxplot ───────────────────────────────────────────────────
+ggplot(matched$data,
+       aes(x = sexual_system, y = m, fill = sexual_system)) +
+  geom_boxplot(alpha = 0.7, outlier.shape = NA) +
+  geom_jitter(width = 0.15, size = 3, alpha = 0.6, color = "grey30") +
+  labs(
+    title = "Pattern complexity by sexual system",
+    x     = "",
+    y     = "Transition density (m)"
+  ) +
+  scale_fill_manual(values = c("gonochoristic" = "#264653",
+                                "protogynous"   = "#e9c46a")) +
+  theme_poster +
+  theme(legend.position = "none")
+
+ggsave("results/recipe13-sexual-system-boxplot.pdf",
+       width = 6, height = 5)
+cat("Saved: results/recipe13-sexual-system-boxplot.pdf\n")
+
+# ── 7. Optional: repeat for other pavo variables ─────────────────
+# You can swap m for A, Jc, Jt, m_dS, or m_dL depending on
+# whether you have a specific hypothesis about hue vs. pattern.
+# e.g.: safe_pgls(Jc ~ sexual_system, df = matched$data, tree = matched$tree)
+```
+

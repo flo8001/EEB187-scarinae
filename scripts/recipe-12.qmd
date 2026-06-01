@@ -3,76 +3,53 @@ title: "recipe 12 latitude"
 output: html_document
 date: "2026-05-30"
 ---
-```{r}
-library(tidyr)
-```
 
 ```{r}
 library(here)
-# ── Recipe 7: Body Size and Pattern Complexity ────────────────
 source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")
 
-# ── 1. Load your data ────────────────────────────────────────
-traits <- read.csv(here("data/traits_df_78.csv"),
-                   stringsAsFactors = FALSE)
-bundle  <- load_bundle(here("data/scarinae-78-bundle"))
-
-# Strip specimen codes from tree tips
+# ── 1. Load data ─────────────────────────────────────────────
+traits <- read.csv(here("data/traits_df_78.csv"), stringsAsFactors = FALSE)
+bundle <- load_bundle(here("data/scarinae-78-bundle"))
 bundle$tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", bundle$tree$tip.label)
-
-# Remove any duplicate tips created by stripping (keep first occurrence)
 dups <- duplicated(bundle$tree$tip.label)
 if (any(dups)) {
-  cat("Dropping", sum(dups), "duplicate tips after stripping\n")
   bundle$tree <- ape::drop.tip(bundle$tree, bundle$tree$tip.label[dups])
 }
 
-# ── 2. Pull latitude data from FishBase ──────────────────────
-# In rfishbase 5.x these columns are `Northernmost` / `Southermost`
-# (older rfishbase used `NorthernLatitude` / `SouthernLatitude`).
-fb <- pull_fishbase(traits$species,
-                    fields = list(stocks = c("Northernmost",
-                                             "Southermost")))
+# ── 2. Pull latitude from FishBase (cached) ──────────────────
+fb_cache <- here("data/fishbase-latitude-cache.rds")
+if (file.exists(fb_cache)) {
+  cat("Loading cached FishBase data...\n")
+  fb <- readRDS(fb_cache)
+} else {
+  cat("Pulling from FishBase (slow, one-time only)...\n")
+  fb <- pull_fishbase(traits$species,
+                      fields = list(stocks = c("Northernmost", "Southermost")))
+  saveRDS(fb, fb_cache)
+}
 
-# ── 3. Compute midpoint latitude ─────────────────────────────
-
+# ── 3. Merge and compute midpoint latitude ───────────────────
 merged <- merge(traits, fb, by = "species")
-
-# Force latitude columns to numeric (pull_fishbase may return them as character)
 merged$Northernmost <- as.numeric(merged$Northernmost)
 merged$Southermost  <- as.numeric(merged$Southermost)
-
-merged <- merged[!is.na(merged$Northernmost) &
-                  !is.na(merged$Southermost), ]
-merged$abs_midlat <- abs((merged$Northernmost +
-                           merged$Southermost) / 2)
-merged <- merged[!is.na(merged$Northernmost) &
-                  !is.na(merged$Southermost), ]
-merged$abs_midlat <- abs((merged$Northernmost +
-                           merged$Southermost) / 2)
-
+merged <- merged[!is.na(merged$Northernmost) & !is.na(merged$Southermost), ]
+merged$abs_midlat <- abs((merged$Northernmost + merged$Southermost) / 2)
 cat("Species with latitude data:", nrow(merged), "\n")
-cat("Midpoint latitude range:",
-    round(range(merged$abs_midlat), 1), "\n")
 
-# ── 4. Match to tree ────────────────────────────────────────
-
-# Only pass species + pavo variables to match_tree_data
-merged_slim <- merged[, c("species", "m", "A", "Jc", "Jt", "m_dS", "m_dL")]
-
-matched <- match_tree_data(bundle$tree, merged_slim, species_col = "species")
-tree    <- matched$tree
-dat     <- matched$data
-
+# ── 4. Match to tree ─────────────────────────────────────────
 matched <- match_tree_data(bundle$tree, merged, species_col = "species")
+matched$data <- matched$data[!duplicated(matched$data$species), ]
+rownames(matched$data) <- matched$data$species
+matched$tree <- ape::drop.tip(matched$tree,
+                               setdiff(matched$tree$tip.label,
+                                       matched$data$species))
 
-# ── 5. PGLS: chromatic diversity vs latitude ─────────────────
-model <- safe_pgls(Jc ~ abs_midlat, df = matched$data,
-                    tree = matched$tree)
+# ── 5. PGLS ──────────────────────────────────────────────────
+model <- safe_pgls(Jc ~ abs_midlat, df = matched$data, tree = matched$tree)
 
-# ── 6. Scatter plot ─────────────────────────────────────────
+# ── 6. Plot ──────────────────────────────────────────────────
 library(ggplot2)
-
 p <- ggplot(matched$data, aes(x = abs_midlat, y = Jc)) +
   geom_point(size = 4, alpha = 0.7, color = "#264653") +
   { if (!is.null(model))
@@ -83,16 +60,18 @@ p <- ggplot(matched$data, aes(x = abs_midlat, y = Jc)) +
        title = "Does latitude predict chromatic diversity?",
        subtitle = "PGLS controlling for phylogeny") +
   theme_poster
-
 print(p)
-ggsave("results/recipe12-latitude-vs-Jc.pdf", p, width = 10, height = 8)
-cat("Saved: results/recipe12-latitude-vs-Jc.pdf\n")
-```
-```{r}
-# Check what's non-numeric
-str(merged)
+ggsave(here("figures/recipe12-latitude-vs-Jc.pdf"), p, width = 10, height = 8)
+cat("Saved: figures/recipe12-latitude-vs-Jc.pdf\n")
 
-# Or just see which columns are character type
-colnames(merged)[sapply(merged, is.character)]
+pdf(here("figures/recipe12-latitude-vs-Jc.pdf"), width = 14, height = 6)
+p
+dev.off()
+
+summary(model)
+```
+
+```{r}
+model <- safe_pgls(Jc ~ abs_midlat, df = matched$data, tree = matched$tree)
 ```
 

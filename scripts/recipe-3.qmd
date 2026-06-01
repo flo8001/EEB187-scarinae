@@ -3,12 +3,108 @@ title: "Recipe 3: Axis of Diversification"
 output: html_document
 date: "2026-05-30"
 ---
+
 ```{r}
+library(here)
+source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")
+
+# ── 1. Load data (cached) ─────────────────────────────────────
+bundle <- load_bundle(here("data/scarinae-78-bundle"))
+bundle$tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", bundle$tree$tip.label)
+dups <- duplicated(bundle$tree$tip.label)
+if (any(dups)) {
+  bundle$tree <- ape::drop.tip(bundle$tree, bundle$tree$tip.label[dups])
+}
+
+pavo_csv <- read.csv(here("data/traits_df_78.csv"), stringsAsFactors = FALSE)
+
+# ── 2. Match tree to data ─────────────────────────────────────
+matched <- match_tree_data(bundle$tree, pavo_csv, species_col = "species")
+tree    <- matched$tree
+dat     <- matched$data
+
+# ── 3. Build trait matrix ─────────────────────────────────────
+pavo_vars <- c("m", "A", "Jc", "Jt", "m_dS", "m_dL")
+trait_mat <- dat[, pavo_vars]
+rownames(trait_mat) <- dat$species
+complete  <- complete.cases(trait_mat)
+trait_mat <- trait_mat[complete, ]
+tree_pca  <- ape::drop.tip(tree, setdiff(tree$tip.label, rownames(trait_mat)))
+trait_mat <- trait_mat[tree_pca$tip.label, ]
+cat("phyloPCA on", nrow(trait_mat), "species x", ncol(trait_mat), "variables\n")
+
+# ── 4. phyloPCA (cached) ──────────────────────────────────────
+cache <- here("data/phylopca-cache.rds")
+if (file.exists(cache)) {
+  cat("Loading cached phyloPCA...\n")
+  phy_pc <- readRDS(cache)
+} else {
+  cat("Running phyloPCA (slow, one-time only)...\n")
+  phy_pc <- phytools::phyl.pca(tree_pca, trait_mat, method = "lambda", mode = "corr")
+  saveRDS(phy_pc, cache)
+}
+
+# ── 5. Loadings ───────────────────────────────────────────────
+cat("\n── Loadings ──\n")
+loadings_mat <- phy_pc$L
+print(round(loadings_mat[, 1:min(3, ncol(loadings_mat))], 3))
+for (i in 1:min(3, ncol(loadings_mat))) {
+  top_var <- names(which.max(abs(loadings_mat[, i])))
+  cat(sprintf("  PC%d dominated by: %s (loading = %.3f)\n",
+              i, top_var, loadings_mat[top_var, i]))
+}
+
+# ── 6. Variance explained ─────────────────────────────────────
+eigenvalues <- diag(phy_pc$Eval)
+var_pct     <- round(100 * eigenvalues / sum(eigenvalues), 1)
+cat("\n── Variance explained ──\n")
+for (i in seq_along(var_pct)) cat(sprintf("  PC%d: %.1f%%\n", i, var_pct[i]))
+cat(sprintf("  PC1 + PC2: %.1f%%\n", sum(var_pct[1:2])))
+
+# ── 7. Biplot ─────────────────────────────────────────────────
+scores <- as.data.frame(phy_pc$S[, 1:2])
+colnames(scores) <- c("PC1", "PC2")
+scores$species <- rownames(scores)
+scores$genus   <- sub("_.*", "", scores$species)
+
+L <- as.data.frame(loadings_mat[, 1:2])
+colnames(L) <- c("PC1", "PC2")
+L$variable <- rownames(L)
+arrow_scale <- 0.85 *
+  min(diff(range(scores$PC1)), diff(range(scores$PC2))) / 2 /
+  max(sqrt(L$PC1^2 + L$PC2^2))
+
+p <- ggplot(scores, aes(x = PC1, y = PC2, color = genus)) +
+  geom_point(size = 4, alpha = 0.85) +
+  geom_text(aes(label = sub("^(\\w{4})\\w*_(\\w{4}).*", "\\1_\\2", species)),
+            size = 2.8, vjust = -1.2, show.legend = FALSE) +
+  geom_segment(data = L,
+               aes(x = 0, y = 0, xend = PC1 * arrow_scale, yend = PC2 * arrow_scale),
+               arrow = arrow(length = unit(0.25, "cm")),
+               color = "#c14a4a", linewidth = 1, inherit.aes = FALSE) +
+  geom_text(data = L,
+            aes(x = PC1 * arrow_scale * 1.15, y = PC2 * arrow_scale * 1.15, label = variable),
+            color = "#c14a4a", fontface = "bold", size = 4.5, inherit.aes = FALSE) +
+  labs(x = sprintf("phyloPC1  (%.1f%% variance)", var_pct[1]),
+       y = sprintf("phyloPC2  (%.1f%% variance)", var_pct[2]),
+       title = "Axis of color pattern diversification",
+       subtitle = "phyloPCA biplot — arrows show pavo variable loadings",
+       color = "Genus") +
+  coord_equal() +
+  theme_poster
+
+print(p)
+ggsave(here("figures/recipe3-phylopca-biplot.pdf"), p, width = 12, height = 10)
+cat("Saved: figures/recipe3-phylopca-biplot.pdf\n")
+```
+
+```{r}
+library(here)
 # ── Recipe 3: Axis of Diversification ──────────────────────────
 source("https://michaelalfaro.github.io/eeb187-demos/recipes/code/helpers.R")   # loads ape, phytools, ggplot2, theme_poster
 
 # ── 1. Load your bundle and pavo data ──────────────────────────
-bundle   <- load_bundle("data/scarinae-78-bundle")
+bundle   <- load_bundle(here("data/scarinae-78-bundle"))
 
 # Strip specimen codes from tree tips
 bundle$tree$tip.label <- gsub("^([A-Za-z]+_[a-z]+).*", "\\1", bundle$tree$tip.label)
@@ -19,7 +115,7 @@ if (any(dups)) {
   cat("Dropping", sum(dups), "duplicate tips after stripping\n")
   bundle$tree <- ape::drop.tip(bundle$tree, bundle$tree$tip.label[dups])
 }
-pavo_csv <- read.csv("data/traits_df_78.csv",
+pavo_csv <- read.csv(here("data/traits_df_78.csv"),
                       stringsAsFactors = FALSE)
 
 
